@@ -1,0 +1,113 @@
+name: Build and Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 1 1 *'
+
+jobs:
+  build:
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Auto-increment version
+        id: bump_version
+        shell: bash
+        run: |
+          # Rule: patch++ each build, minor++ when patch>9, major++ when minor>9
+          # Start from 1.0.0
+          CURRENT=$(jq -r '.version // "1.0.0"' package.json)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          
+          # If version is unset or empty, start from 1.0.0
+          MAJOR=${MAJOR:-1}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+          
+          # Bump: increment patch
+          PATCH=$((PATCH + 1))
+          
+          # If patch exceeds 9, bump minor and reset patch
+          if [ "$PATCH" -gt 9 ]; then
+              PATCH=0
+              MINOR=$((MINOR + 1))
+          fi
+          
+          # If minor exceeds 9, bump major and reset minor
+          if [ "$MINOR" -gt 9 ]; then
+              MINOR=0
+              MAJOR=$((MAJOR + 1))
+          fi
+          
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Bumping version: ${CURRENT:-'(unset)'} → ${NEW_VERSION}"
+          
+          # Update package.json
+          tmp=$(mktemp)
+          jq --arg v "$NEW_VERSION" '.version = $v' package.json > "$tmp" && mv "$tmp" package.json
+          
+          # Also update RELEASE.md header if it has a version line
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump
+        shell: bash
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add package.json
+          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.version }}" || true
+          git push origin main || true
+
+      - name: Get release version
+        id: get_version
+        run: echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+
+      - name: Check release version
+        run: echo "Release version is ${{ steps.get_version.outputs.version }}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm install --production
+
+      - name: Type check
+        run: npm run check
+        
+      - name: Build project
+        run: npm run build
+
+      - name: Read release note
+        id: read_release
+        shell: bash
+        run: |
+          r=$(cat RELEASE.md)         
+          r="${r//'%'/'%25'}"                               
+          r="${r//$'\n'/'%0A'}"                             
+          r="${r//$'\r'/'%0D'}"                             
+          echo "RELEASE_BODY=$r" >> $GITHUB_OUTPUT          
+
+      - name: Upload Release Assets
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/*
+          tag: v${{ steps.get_version.outputs.version }}
+          release_name: Release v${{ steps.get_version.outputs.version }}
+          overwrite: true
+          file_glob: true
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+          promote: ${{ github.ref == 'refs/heads/main' }}
+          make_latest: ${{ github.ref == 'refs/heads/main' }}
+          body: ${{ steps.read_release.outputs.RELEASE_BODY }}

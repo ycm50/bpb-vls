@@ -1,0 +1,17 @@
+*
+!.gitignore
+!package.json
+!tsconfig.json
+!src/
+!src/**
+!scripts/
+!scripts/build.js
+!scripts/build-vless.js
+!.github/
+!.github/**
+!README_fa.md
+!README.md
+!RELEASE.md
+
+!docs
+!docs/**
